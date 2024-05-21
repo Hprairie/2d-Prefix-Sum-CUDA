@@ -35,7 +35,7 @@ int main() {
 
     // --- Initialize Data
     initialize(h_matrix);
-    print_matrix(h_matrix);
+    // print_matrix(h_matrix);
     std::cout << "\n\n";
 
     // --- Device Memory
@@ -56,8 +56,8 @@ int main() {
 
     // --- Copy to Host
     cudaMemcpy(h_result, d_result, matrix_size, cudaMemcpyDeviceToHost);
-    std::cout << "\n\n";
-    print_matrix(h_result);
+    // std::cout << "\n\n";
+    // print_matrix(h_result);
 
     return 0;
 }

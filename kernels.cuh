@@ -11,10 +11,12 @@
 // #define COLS 32
 // #define ITEMS 4
 
-constexpr dim3 BLOCK_SIZE {2, 2, 1};
-#define ROWS 4
-#define COLS 4
-#define ITEMS 2
+#define ROWS 128
+#define COLS 128
+#define DIM 128
+#define ITEMS 8
+
+constexpr dim3 BLOCK_SIZE {16, 16, 1};
 // --------------- Ops --------------------
 
 
@@ -59,7 +61,9 @@ __global__ void warp_scan2d(int *input, int * result);
 
 __global__ void warp_scan_orthoganal_2d(int *input, int *result, int *result2);
 
-__global__ void warp_scan2d_bidirectional(int *input, int *result);
+__global__ void warp_scan_orthoganal_2d_shared(int *input, int *result, int *result2);
+
+__global__ void warp_scan2d_full(int *input, int *result);
 
 // ---------------- Callers -------------------
 
