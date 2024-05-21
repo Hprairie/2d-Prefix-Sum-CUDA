@@ -80,10 +80,6 @@ __global__ void warp_scan(int *input, int *result){
     typedef cub::BlockStore<int, BLOCK_SIZE.x, ITEMS, cub::BLOCK_STORE_DIRECT, BLOCK_SIZE.y> BlockStore;
     typedef cub::WarpScan<int, BLOCK_SIZE.x> WarpScan;
 
-    if (threadIdx.x == 0 && threadIdx.y == 0){
-        printf("Value of data %d \n", input[1]);
-    }
-
     __shared__ union {
         typename BlockLoad::TempStorage load;
         typename WarpScan::TempStorage scan[BLOCK_SIZE.y];
@@ -104,11 +100,46 @@ __global__ void warp_scan(int *input, int *result){
 
         cub::internal::ThreadScanExclusive(thread_data, thread_data, scan_op, prefix);
 
-        if (threadIdx.y == 0){
-            printf("Thread %d: %d %d \n", threadIdx.x, thread_data[0], thread_data[1]);
-        }
-
         BlockStore(temp_storage.store).Store(result + x * blockDim.y * COLS, thread_data);
+        __syncthreads();
+    }
+}
+
+__global__ void shared_warp_scan(int *input, int*result){
+    typedef cub::BlockLoad<int, BLOCK_SIZE.x, ITEMS, cub::BLOCK_LOAD_DIRECT, BLOCK_SIZE.y> BlockLoad;
+    typedef cub::BlockStore<int, BLOCK_SIZE.x, ITEMS, cub::BLOCK_STORE_DIRECT, BLOCK_SIZE.y> BlockStore;
+    typedef cub::WarpScan<int, BLOCK_SIZE.x> WarpScan;
+
+    // Define memory layout
+    union SmemLayout{
+        typename BlockLoad::TempStorage load;
+        typename BlockStore::TempStorage store;
+        typename WarpScan:: TempStorage scan[BLOCK_SIZE.y];
+    };
+
+    extern __shared__ __align__ (alignof(SmemLayout)) char smem[];
+
+    // reinterpret mem
+    auto& load_mem = reinterpret_cast<BlockLoad::TempStorage&>(smem);
+    auto& store_mem = reinterpret_cast<BlockStore::TempStorage&>(smem);
+    auto* scan_mem = reinterpret_cast<WarpScan::TempStorage*>(smem);
+
+    constexpr int scans = ROWS / BLOCK_SIZE.y;
+    for (int x = 0; x < scans; x ++){
+        int thread_data[ITEMS];
+        BlockLoad(load_mem).Load(input + x * blockDim.y * COLS, thread_data);
+        __syncthreads();
+
+        auto scan_op = cub::Sum();
+        int prefix = cub::internal::ThreadReduce(thread_data, scan_op);
+
+        int warp_id = threadIdx.x / BLOCK_SIZE.x;
+        WarpScan(scan_mem[warp_id]).ExclusiveScan(prefix, prefix, scan_op);
+        __syncthreads();
+
+        cub::internal::ThreadScanExclusive(thread_data, thread_data, scan_op, prefix);
+
+        BlockStore(store_mem).Store(result + x * blockDim.y * COLS, thread_data);
         __syncthreads();
     }
 }
@@ -236,23 +267,29 @@ __global__ void warp_scan_bidirectional(int *input, int *result){
     }
 }
 
-__global__ void warp_scan2d(int *input, int *result){
+__global__ void warp_scan_orthoganal_2d(int *input, int *result, int *result2){
     // Create classes for data-movement
     typedef cub::WarpLoad<int, ITEMS, cub::WARP_LOAD_DIRECT, BLOCK_SIZE.x> WarpLoad;
     typedef cub::WarpStore<int, ITEMS, cub::WARP_STORE_DIRECT, BLOCK_SIZE.x> WarpStore;
-    typedef cub::WarpScan<int, BLOCK_SIZE.x> WarpScan;
-    typedef WarpReverseScan<int, BLOCK_SIZE.x> ReverseWarpScan;
+    typedef cub::BlockExchange<int, BLOCK_SIZE.x, ITEMS, false, BLOCK_SIZE.y> BlockExchange;
+    typedef cub::WarpScan<int, BLOCK_SIZE.x> HorizontalWarpScan;
+    typedef WarpReverseScan<int, BLOCK_SIZE.x> HorizontalReverseWarpScan;
+    typedef cub::WarpScan<int, (int)(BLOCK_SIZE.y / ITEMS)> VerticalWarpScan;
+    typedef WarpReverseScan<int, (int)(BLOCK_SIZE.y / ITEMS)> VerticalReverseWarpScan;
 
 
     // Create Shared Memory for communication
     __shared__ union {
         typename WarpLoad::TempStorage load[BLOCK_SIZE.y];
         typename WarpStore::TempStorage store[BLOCK_SIZE.y];
-        typename WarpScan::TempStorage scan[BLOCK_SIZE.y];
+        typename BlockExchange::TempStorage exchange;
+        typename HorizontalWarpScan::TempStorage horizontal_scan[BLOCK_SIZE.y];
+        typename VerticalWarpScan::TempStorage vertical_scan[(int)(BLOCK_SIZE.y / ITEMS)];
     } temp_storage;
 
     // Create a Scan Op and Meta Info
-    const int warp_id = threadIdx.y;
+    const int horizontal_warp_id = threadIdx.y;
+    const int vertical_warp_id = threadIdx.y / ITEMS;
     auto scan_op = cub::Sum();
 
     // Get Chunk Info
@@ -269,11 +306,11 @@ __global__ void warp_scan2d(int *input, int *result){
         BlockPrefixCallbackOp forward_prefix(0);
         for (int x = 0; x < chunks_x; x++){
             // Load the Data for the chunk
-            WarpLoad(temp_storage.load[warp_id]).Load(input + y * COLS * BLOCK_SIZE.y + COLS * warp_id + x * ITEMS * BLOCK_SIZE.x, thread_data[y][x]);
+            WarpLoad(temp_storage.load[horizontal_warp_id]).Load(input + y * COLS * BLOCK_SIZE.y + COLS * horizontal_warp_id + x * ITEMS * BLOCK_SIZE.x, thread_data[y][x]);
             cub::CTA_SYNC();
 
             //Create objects for prefix sum
-            auto warp_scan = WarpScan(temp_storage.scan[warp_id]);
+            auto warp_scan = HorizontalWarpScan(temp_storage.horizontal_scan[horizontal_warp_id]);
             int block_aggregate;
 
             // Run a prefix sum for data
@@ -290,7 +327,7 @@ __global__ void warp_scan2d(int *input, int *result){
         BlockPrefixCallbackOp reverse_postfix(0);
         for (int x = chunks_x - 1; x >= 0; x--){
             // Create objects for postfix sum
-            auto reverse_warp_scan = ReverseWarpScan();
+            auto reverse_warp_scan = HorizontalReverseWarpScan();
             int block_aggregate;
 
             // Run a reverse prefix sum for data
@@ -306,9 +343,9 @@ __global__ void warp_scan2d(int *input, int *result){
                 forward_thread_data[y][x][d] += reverse_thread_data[y][x][d];
             }
 
-            // // Store Data
-            // WarpStore(temp_storage.store[warp_id]).Store(result + y * COLS * BLOCK_SIZE.y + COLS * warp_id + x * ITEMS * BLOCK_SIZE.x, thread_data[y][x]);
-            // cub::CTA_SYNC();
+            // Store Data
+            WarpStore(temp_storage.store[horizontal_warp_id]).Store(result + y * COLS * BLOCK_SIZE.y + COLS * horizontal_warp_id + x * ITEMS * BLOCK_SIZE.x, forward_thread_data[y][x]);
+            cub::CTA_SYNC();
         }
     }
 
@@ -320,10 +357,14 @@ __global__ void warp_scan2d(int *input, int *result){
         BlockPrefixCallbackOp down_prefix(0);
         for (int y = 0; y < chunks_y; y++){
             // Rearrange data accross the block
-            BlockExchange(temp_store.exchange).BlockToStriped(thread_data[y][x], thread_data[y][x]); // Transposing accross threads
+            int thread_rank[ITEMS];
+            for (int i = 0; i < ITEMS; i++){ // If calling this multiple times then cache it
+                thread_rank[i] = threadIdx.y + (i + threadIdx.x * ITEMS) * BLOCK_SIZE.y; // Essentially just transposing our data
+            }
+            BlockExchange(temp_storage.exchange).ScatterToBlocked(thread_data[y][x], thread_data[y][x], thread_rank); // Transposing accross threads
 
             // Create objects for prefix sum
-            auto warp_scan = WarpScan(temp_storage.scan[warp_id]);
+            auto warp_scan = VerticalWarpScan(temp_storage.vertical_scan[vertical_warp_id]);
             int block_aggregate;
 
             // Run a prefix sum for data
@@ -341,7 +382,7 @@ __global__ void warp_scan2d(int *input, int *result){
         BlockPrefixCallbackOp up_postfix(0);
         for (int y = chunks_y - 1; y >= 0; y--){
             // Create objects for postfix sum
-            auto reverse_warp_scan = ReverseWarpScan();
+            auto reverse_warp_scan = VerticalReverseWarpScan();
             int block_aggregate;
 
             // Run a reverse prefix sum for data
@@ -354,70 +395,21 @@ __global__ void warp_scan2d(int *input, int *result){
 
             // Fuse Reverse with Forward
             for (int d = 0; d < ITEMS; d++){
-                forward_thread_data[y][x][d] += up_thread_data[y][x][d];
+                down_thread_data[y][x][d] += up_thread_data[y][x][d];
             }
+            int thread_rank[ITEMS];
+            // Need to test if non symmetric matrices are worth it, (can simplify calculation if not)
+            constexpr int warp_size_vertical = BLOCK_SIZE.y / ITEMS;
+            for (int i = 0; i < ITEMS; i++){ // If calling this multiple times then cache it
+                const int index = threadIdx.x + threadIdx.y * BLOCK_SIZE.x;
+                thread_rank[i] = (index / warp_size_vertical) + (index % warp_size_vertical + i) * (BLOCK_SIZE.x * ITEMS); // Essentially just reverse transposing our data (slighly weird bc of thread arrangement)
+            }
+
+            BlockExchange(temp_storage.exchange).ScatterToBlocked(down_thread_data[y][x], down_thread_data[y][x], thread_rank); // Transposing accross threads
+            // Store Data
+            WarpStore(temp_storage.store[horizontal_warp_id]).Store(result2 + y * COLS * BLOCK_SIZE.y + COLS * horizontal_warp_id + x * ITEMS * BLOCK_SIZE.x, down_thread_data[y][x]);
+            cub::CTA_SYNC();
         }
     }
 }
 
-
-//
-//
-// __global__ void warp_scan2d(int *input, int *result){
-//     typedef cub::BlockLoad<int, BLOCK_SIZE.x, ITEMS, cub::BLOCK_LOAD_DIRECT, BLOCK_SIZE.y> BlockLoad;
-//     typedef cub::BlockExchange<int, BLOCK_SIZE.x, ITEMS, false, BLOCK_SIZE.y> BlockExchange;
-//     typedef cub::BlockStore<int, BLOCK_SIZE.x, ITEMS, cub::BLOCK_STORE_TRANSPOSE, BLOCK_SIZE.y> BlockStore;
-//     typedef cub::WarpScan<int, BLOCK_SIZE.x> WarpScan;
-//
-//     if (threadIdx.x == 0 && threadIdx.y == 0){
-//         printf("Value of data %d \n", input[1]);
-//     }
-//
-//     __shared__ union {
-//         typename BlockLoad::TempStorage load;
-//         typename WarpScan::TempStorage scan[BLOCK_SIZE.y];
-//         typename BlockExchange::TempStorage exchange;
-//         typename BlockStore::TempStorage store;
-//     } temp_storage;
-//
-//     // Can Swap out the scan op for anything
-//     auto scan_op = ScanOp();
-//
-//     // DATA NEEDS TO BE CHUNKED IN A ROW MAJOR ORDER
-//     // constexpr int v_chunks_y = ROWS / BLOCK_SIZE.y;
-//     // constexpr int v_chunks_x = COLS / (ITEMS * BLOCK_SIZE.x);
-//     // int thread_data[v_chunks_y][v_chunks_x][ITEMS];
-//     // for (int i = 0; i < v_chunks_y; i++){
-//     //     for (int j = 0; j < v_chunks_x; j++){
-//     //         // Load the data
-//     //         BlockLoad(temp_storage.load).Load(input + i * COLS * BLOCK_SIZE.y + j * ITEMS * BLOCK_SIZE.x, thread_data[i][j]);
-//     //
-//     //         // Run the prefix sum
-//     //     }
-//     // }
-//     // // Load the data
-//     // BlockLoad(temp_storage.load).Load(input, thread_data);
-//     // __syncthreads();
-//     //
-//     // // First prefix sum along the x-axis
-//     // int prefix = cub::internal::ThreadReduce(thread_data, scan_op);
-//     //
-//     // int warp_id = threadIdx.x / BLOCK_SIZE.x;
-//     // WarpScan(temp_storage.scan[warp_id]).ExclusiveSum(prefix, prefix);
-//     // __syncthreads();
-//     //
-//     // cub::internal::ThreadScanExclusive(thread_data, thread_data, scan_op, prefix);
-//     //
-//     //
-//     // // Rearrange the data (i.e.) transpose
-//     // BlockExchange(temp_storage.exchange).BlockedToWarpStriped(thread_data, thread_data);
-//     //
-//     // // Second prefix sum along the y-axis
-//     // prefix = cub::internal::ThreadReduce(thread_data, scan_op);
-//     // WarpScan(temp_storage.scan[warp_id]).ExclusiveSum(prefix,prefix);
-//     //
-//     // cub::internal::ThreadScanExclusive(thread_data, thread_data, scan_op, prefix);
-//     //
-//     // BlockStore(temp_storage.store).Store(result, thread_data);
-//     // __syncthreads();
-// }

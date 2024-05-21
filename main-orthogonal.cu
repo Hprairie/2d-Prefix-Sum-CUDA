@@ -32,6 +32,7 @@ int main() {
     // --- Host Memory
     int h_matrix[ROWS * COLS] = {0};
     int h_result[ROWS * COLS] = {0};
+    int h_result2[ROWS * COLS] = {0};
 
     // --- Initialize Data
     initialize(h_matrix);
@@ -41,23 +42,28 @@ int main() {
     // --- Device Memory
     int* d_matrix;
     int* d_result;
+    int* d_result2;
     const size_t matrix_size = sizeof(int) * size_t(ROWS * COLS);
 
     cudaMalloc((void**)&d_matrix, matrix_size);
     cudaMalloc((void**)&d_result, matrix_size);
+    cudaMalloc((void**)&d_result2, matrix_size);
     cudaMemcpy(d_matrix, h_matrix, matrix_size, cudaMemcpyHostToDevice);
 
     // --- Kernel Launch
     dim3 block = BLOCK_SIZE;
     dim3 grid {1, 1, 1};
 
-    warp_scan<<<grid, block>>>(d_matrix, d_result);
+    warp_scan_orthoganal_2d<<<grid, block>>>(d_matrix, d_result, d_result2);
     cudaDeviceSynchronize();
 
     // --- Copy to Host
     cudaMemcpy(h_result, d_result, matrix_size, cudaMemcpyDeviceToHost);
-    std::cout << "\n\n";
+    cudaMemcpy(h_result2, d_result2, matrix_size, cudaMemcpyDeviceToHost);
+    std::cout << "\n";
     print_matrix(h_result);
+    std::cout << "\n";
+    print_matrix(h_result2);
 
     return 0;
 }
