@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cub/cub.cuh>
-#include "inputs.h"
 #include "reverse_scan.cuh"
 
 // ---------------------------------------

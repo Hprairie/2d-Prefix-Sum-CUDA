@@ -238,41 +238,38 @@ __global__ void warp_scan_bidirectional(int *input, int *result){
 
 __global__ void warp_scan2d(int *input, int *result){
     // Create classes for data-movement
-    typedef cub::BlockLoad<int, BLOCK_SIZE.x, ITEMS, cub::BLOCK_LOAD_DIRECT, BLOCK_SIZE.y> BlockLoad;
-    typedef cub::BlockStore<int, BLOCK_SIZE.x, ITEMS, cub::BLOCK_STORE_DIRECT, BLOCK_SIZE.y> BlockStore;
-    typedef cub::BlockExchange<int, BLOCK_SIZE.x, ITEMS, false, BLOCK_SIZE.y> BlockExchange;
+    typedef cub::WarpLoad<int, ITEMS, cub::WARP_LOAD_DIRECT, BLOCK_SIZE.x> WarpLoad;
+    typedef cub::WarpStore<int, ITEMS, cub::WARP_STORE_DIRECT, BLOCK_SIZE.x> WarpStore;
     typedef cub::WarpScan<int, BLOCK_SIZE.x> WarpScan;
     typedef WarpReverseScan<int, BLOCK_SIZE.x> ReverseWarpScan;
 
 
     // Create Shared Memory for communication
     __shared__ union {
-        typename BlockLoad::TempStorage load;
-        typename BlockStore::TempStorage store;
-        typename BlockExchange::TempStorage exchange;
+        typename WarpLoad::TempStorage load[BLOCK_SIZE.y];
+        typename WarpStore::TempStorage store[BLOCK_SIZE.y];
         typename WarpScan::TempStorage scan[BLOCK_SIZE.y];
     } temp_storage;
 
     // Create a Scan Op and Meta Info
-    const int warp_id = threadIdx.x / BLOCK_SIZE.x;
+    const int warp_id = threadIdx.y;
     auto scan_op = cub::Sum();
 
-
-    // Iterate through chunks
+    // Get Chunk Info
     constexpr int chunks_x = COLS / (ITEMS * BLOCK_SIZE.x);
     constexpr int chunks_y = ROWS / BLOCK_SIZE.y;
 
-    if (threadIdx.x == 0 && threadIdx.y == 0){
-        printf("%d %d \n", chunks_x, chunks_y);
-    }
+    // Create storage (Should create better methods to fuse these)
     int thread_data[chunks_y][chunks_x][ITEMS];
     int forward_thread_data[chunks_y][chunks_x][ITEMS];
+    int reverse_thread_data[chunks_y][chunks_x][ITEMS];
+    // LEFT-RIGHT BIDIRECTIONAL SCAN
     for (int y = 0; y < chunks_y; y++){
         // Loop for Forward Prefix Sum
         BlockPrefixCallbackOp forward_prefix(0);
         for (int x = 0; x < chunks_x; x++){
             // Load the Data for the chunk
-            BlockLoad(temp_storage.load).Load(input + y * COLS * BLOCK_SIZE.y + x * ITEMS * BLOCK_SIZE.x, thread_data[y][x]);
+            WarpLoad(temp_storage.load[warp_id]).Load(input + y * COLS * BLOCK_SIZE.y + COLS * warp_id + x * ITEMS * BLOCK_SIZE.x, thread_data[y][x]);
             cub::CTA_SYNC();
 
             //Create objects for prefix sum
@@ -292,32 +289,75 @@ __global__ void warp_scan2d(int *input, int *result){
         // Loop for Reverse Prefix Sum
         BlockPrefixCallbackOp reverse_postfix(0);
         for (int x = chunks_x - 1; x >= 0; x--){
-            // Create objects for prefix sum
+            // Create objects for postfix sum
             auto reverse_warp_scan = ReverseWarpScan();
             int block_aggregate;
 
             // Run a reverse prefix sum for data
             int postfix = ThreadReverseReduce(thread_data[y][x], scan_op); // Get Postfix
             reverse_warp_scan.ExclusiveReverseScan(postfix, postfix, scan_op, block_aggregate); // Run Scan on Postfix
-            int block_postfix = reverse_postfix(block_aggregate);
+            int block_postfix = reverse_postfix(block_aggregate); // Get previous chunks value
             block_postfix = reverse_warp_scan.Broadcast(block_postfix, 0); 
             postfix = scan_op(postfix, block_postfix); // Update postfix
-            ThreadReverseScanExclusive(thread_data[y][x], thread_data[y][x], scan_op, postfix);
+            ThreadReverseScanExclusive(thread_data[y][x], reverse_thread_data[y][x], scan_op, postfix);
 
             // Fuse Reverse with Forward
             for (int d = 0; d < ITEMS; d++){
-                thread_data[y][x][d] = forward_thread_data[y][x][d];
+                forward_thread_data[y][x][d] += reverse_thread_data[y][x][d];
             }
 
-            // Store Data
-            BlockStore(temp_storage.store).Store(result + y * COLS * BLOCK_SIZE.y + x * ITEMS * BLOCK_SIZE.x, thread_data[y][x]);
-            cub::CTA_SYNC();
-        }
-        if (threadIdx.x == 0 && threadIdx.y == 0){
-            printf("\n\n");
+            // // Store Data
+            // WarpStore(temp_storage.store[warp_id]).Store(result + y * COLS * BLOCK_SIZE.y + COLS * warp_id + x * ITEMS * BLOCK_SIZE.x, thread_data[y][x]);
+            // cub::CTA_SYNC();
         }
     }
 
+    int down_thread_data[chunks_y][chunks_x][ITEMS];
+    int up_thread_data[chunks_y][chunks_x][ITEMS];
+    // UP-DOWN BIDIRECTIONAL SCAN
+    for (int x = 0; x < chunks_x; x++){
+        // Loop through Downward Prefix Sum
+        BlockPrefixCallbackOp down_prefix(0);
+        for (int y = 0; y < chunks_y; y++){
+            // Rearrange data accross the block
+            BlockExchange(temp_store.exchange).BlockToStriped(thread_data[y][x], thread_data[y][x]); // Transposing accross threads
+
+            // Create objects for prefix sum
+            auto warp_scan = WarpScan(temp_storage.scan[warp_id]);
+            int block_aggregate;
+
+            // Run a prefix sum for data
+            int prefix = cub::internal::ThreadReduce(thread_data[y][x], scan_op); // Get Prefix 
+            warp_scan.ExclusiveScan(prefix, prefix, scan_op, block_aggregate); // Run Scan on Prefix
+            int block_prefix = down_prefix(block_aggregate); // Get chunk prefix
+            block_prefix = warp_scan.Broadcast(block_prefix, 0); // Broadcast from lane 0 to all others
+            cub::CTA_SYNC();
+
+            prefix = scan_op(prefix, block_prefix); // Update Prefix
+            cub::internal::ThreadScanExclusive(thread_data[y][x], down_thread_data[y][x], scan_op, prefix); // Run Local Exclusive Prefix
+        }
+
+        // Loop through Upwards Prefix Sum
+        BlockPrefixCallbackOp up_postfix(0);
+        for (int y = chunks_y - 1; y >= 0; y--){
+            // Create objects for postfix sum
+            auto reverse_warp_scan = ReverseWarpScan();
+            int block_aggregate;
+
+            // Run a reverse prefix sum for data
+            int postfix = ThreadReverseReduce(thread_data[y][x], scan_op); // Get Postfix
+            reverse_warp_scan.ExclusiveReverseScan(postfix, postfix, scan_op, block_aggregate); // Run Scan on Postfix
+            int block_postfix = up_postfix(block_aggregate); // Get previous chunks value
+            block_postfix = reverse_warp_scan.Broadcast(block_postfix, 0); 
+            postfix = scan_op(postfix, block_postfix); // Update postfix
+            ThreadReverseScanExclusive(thread_data[y][x], up_thread_data[y][x], scan_op, postfix);
+
+            // Fuse Reverse with Forward
+            for (int d = 0; d < ITEMS; d++){
+                forward_thread_data[y][x][d] += up_thread_data[y][x][d];
+            }
+        }
+    }
 }
 
 
