@@ -11,12 +11,12 @@
 // #define COLS 32
 // #define ITEMS 4
 
-#define ROWS 128
-#define COLS 128
-#define DIM 128
-#define ITEMS 8
+#define ROWS 32
+#define COLS 32
+#define DIM 768
+#define ITEMS 2
 
-constexpr dim3 BLOCK_SIZE {16, 16, 1};
+constexpr dim3 BLOCK_SIZE {4, 8, 1};
 // --------------- Ops --------------------
 
 

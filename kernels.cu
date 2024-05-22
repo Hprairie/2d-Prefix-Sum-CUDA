@@ -279,6 +279,8 @@ __global__ void warp_scan_orthoganal_2d(int *input, int *result, int *result2){
     typedef WarpReverseScan<int, (int)(BLOCK_SIZE.y / ITEMS)> VerticalReverseWarpScan;
 
     input = input + (blockIdx.x * ROWS * COLS);
+    result = result + (blockIdx.x * ROWS * COLS);
+    result2 = result2 + (blockIdx.x * ROWS * COLS);
 
 
     // Create Shared Memory for communication
