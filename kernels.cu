@@ -172,7 +172,7 @@ __global__ void reverse_warp_scan(int *input, int *result){
             printf("Thread %d: %d \n", threadIdx.x, prefix);
         }
 
-        int warp_id = threadIdx.x / BLOCK_SIZE.x;
+        // int warp_id = threadIdx.x / BLOCK_SIZE.x;
         int aggregate = 0;
         WarpScan().ExclusiveReverseScan(prefix, prefix, scan_op, aggregate);
 

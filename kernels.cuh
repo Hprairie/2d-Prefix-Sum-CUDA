@@ -15,9 +15,9 @@
 #define ROWS 256
 #define COLS 256
 #define DIM 756 * 16
-#define ITEMS 2
+#define ITEMS 4
 
-constexpr dim3 BLOCK_SIZE {4, 8, 1};
+constexpr dim3 BLOCK_SIZE {8, 16, 1};
 // --------------- Ops --------------------
 
 
