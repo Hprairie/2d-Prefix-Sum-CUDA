@@ -2,6 +2,7 @@
 
 #include <cub/cub.cuh>
 #include "reverse_scan.cuh"
+#include "thread_scan.cuh"
 
 // ---------------------------------------
 #define DIVUP(a, b) (a + b - 1)/b;
@@ -11,9 +12,9 @@
 // #define COLS 32
 // #define ITEMS 4
 
-#define ROWS 32
-#define COLS 32
-#define DIM 768
+#define ROWS 256
+#define COLS 256
+#define DIM 756 * 16
 #define ITEMS 2
 
 constexpr dim3 BLOCK_SIZE {4, 8, 1};
@@ -62,6 +63,9 @@ __global__ void warp_scan2d(int *input, int * result);
 __global__ void warp_scan_orthoganal_2d(int *input, int *result, int *result2);
 
 __global__ void warp_scan_orthoganal_2d_shared(int *input, int *result, int *result2);
+
+template <typename data_t>
+__global__ void improved_warp_scan_orthoganal_2d(data_t *input, data_t *result, data_t *result2);
 
 __global__ void warp_scan2d_full(int *input, int *result);
 

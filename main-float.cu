@@ -3,29 +3,40 @@
 #include <iostream>
 #include "kernels.cuh"
 
-void initialize(int* data) {
+
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+   if (code != cudaSuccess) 
+   {
+      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      if (abort) exit(code);
+   }
+}
+
+void initialize(float* data) {
     for (int d=0; d < DIM; d++){
         for (int row=0; row<ROWS; row++) {
             for (int col=0; col<(COLS); col++) {
-                data[(d * COLS*ROWS) + (row*COLS) + col] = col;
+                data[(d * COLS*ROWS) + (row*COLS) + col] = (float)col;
             }
         }
     }
 }
 
-void print_matrix(int* matrix) {
+void print_matrix(float* matrix) {
     for (int row=0; row<ROWS; row++) {
         printf("%3d [", row);
         for (int col=0; col<(COLS); col++) {
             const auto val = matrix[(row*COLS)+col];
-            printf("(%3d) ", val);
+            printf("(%.0f) ", val);
         }
 
         printf("]\n");
     }
 }
 
-void check_matrix(int* matrix){
+void check_matrix(float* matrix){
     int offset = ROWS * COLS;
     for (int row=0; row<ROWS; row++) {
         for (int col=0; col<(COLS); col++) {
@@ -34,14 +45,13 @@ void check_matrix(int* matrix){
     }
 }
 
-void print_row(int* matrix){
+void print_row(float* matrix){
     for (int row=0; row<1; row++) {
         printf("%3d [", row);
         for (int col=0; col<(COLS); col++) {
             const auto val = matrix[(row*COLS)+col];
-            printf("(%3d) ", val);
+            printf("(%.0f) ", val);
         }
-
         printf("]\n");
     }
 }
@@ -49,33 +59,34 @@ void print_row(int* matrix){
 int main() {
 
     // --- Host Memory
-    int h_matrix[DIM * ROWS * COLS] = {0};
-    int h_result[DIM * ROWS * COLS] = {0};
-    int h_result2[DIM * ROWS * COLS] = {0};
+    float h_matrix[DIM * ROWS * COLS] = {0};
+    float h_result[DIM * ROWS * COLS] = {0};
+    float h_result2[DIM * ROWS * COLS] = {0};
 
     // --- Initialize Data
     initialize(h_matrix);
+    print_row(h_matrix);
     // print_matrix(h_matrix);
     // std::cout << "\n\n";
 
     // --- Device Memory
-    int* d_matrix;
-    int* d_result;
-    int* d_result2;
-    const size_t matrix_size = sizeof(int) * size_t(ROWS * COLS);
+    float* d_matrix;
+    float* d_result;
+    float* d_result2;
+    const size_t matrix_size = sizeof(float) * size_t(DIM * ROWS * COLS);
 
-    cudaMalloc((void**)&d_matrix, matrix_size);
-    cudaMalloc((void**)&d_result, matrix_size);
-    cudaMalloc((void**)&d_result2, matrix_size);
-    cudaMemcpy(d_matrix, h_matrix, matrix_size, cudaMemcpyHostToDevice);
+    gpuErrchk(cudaMalloc((void**)&d_matrix, matrix_size));
+    gpuErrchk(cudaMalloc((void**)&d_result, matrix_size));
+    gpuErrchk(cudaMalloc((void**)&d_result2, matrix_size));
+    gpuErrchk(cudaMemcpy(d_matrix, h_matrix, matrix_size, cudaMemcpyHostToDevice));
 
     // --- Kernel Launch
     dim3 block = BLOCK_SIZE;
     dim3 grid {DIM, 1, 1};
 
-    warp_scan_orthoganal_2d<<<grid, block>>>(d_matrix, d_result, d_result2);
-    cudaGetLastError();
-    cudaDeviceSynchronize();
+    improved_warp_scan_orthoganal_2d<<<grid, block>>>(d_matrix, d_result, d_result2);
+    gpuErrchk(cudaPeekAtLastError());
+    gpuErrchk(cudaDeviceSynchronize());
 
     // CubDebugExit(cudaDeviceSynchronize());
 

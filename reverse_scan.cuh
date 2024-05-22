@@ -166,11 +166,12 @@ struct WarpReverseScan {
         T inclusive_output;
         InclusiveReverseScan(input, inclusive_output, scan_op);
         warp_aggregate = cub::ShuffleIndex<LOGICAL_WARP_THREADS>(inclusive_output, 0, member_mask);
-        exclusive_output = inclusive_output - input;
-        // // initial value unknown
-        // exclusive_output = cub::ShuffleDown<LOGICAL_WARP_THREADS>(
-        //     inclusive_output, 1, LOGICAL_WARP_THREADS - 1, member_mask
-        // );
+        // exclusive_output = inclusive_output - input;
+
+        // initial value unknown
+        exclusive_output = cub::ShuffleDown<LOGICAL_WARP_THREADS>(
+            inclusive_output, 1, LOGICAL_WARP_THREADS - 1, member_mask
+        );
     }
 
     /**
@@ -184,13 +185,58 @@ struct WarpReverseScan {
         ScanOpT         scan_op)            ///< [in] Binary scan operator
     {
         InclusiveReverseScan(input, inclusive_output, scan_op);
+        // exclusive_output = inclusive_output - input;
+
         // initial value unknown
-        exclusive_output = inclusive_output - input;
-        // exclusive_output = cub::ShuffleDown<LOGICAL_WARP_THREADS>(
-        //     inclusive_output, 1, LOGICAL_WARP_THREADS - 1, member_mask
-        // );
+        exclusive_output = cub::ShuffleDown<LOGICAL_WARP_THREADS>(
+            inclusive_output, 1, LOGICAL_WARP_THREADS - 1, member_mask
+        );
     }
 
+    /// Exclusive scan
+    // Get exclusive from inclusive
+    template <typename ScanOpT>
+    __device__ __forceinline__ void ExclusiveReverseScan(
+        T              input,              ///< [in] Calling thread's input item.
+        T              &exclusive_output,  ///< [out] Calling thread's output item.  May be aliased with \p input.
+        T              initial_value,      ///< [in] The inital value to seed the scan op
+        ScanOpT        scan_op,            ///< [in] Binary scan operator
+        T              &warp_aggregate)    ///< [out] Warp-wide aggregate reduction of input items.
+    {
+        T inclusive_output;
+        InclusiveReverseScan(input, inclusive_output, scan_op);
+        warp_aggregate = cub::ShuffleIndex<LOGICAL_WARP_THREADS>(inclusive_output, 0, member_mask);
+        // exclusive_output = inclusive_output - input;
+
+        // initial value unknown
+        exclusive_output = cub::ShuffleDown<LOGICAL_WARP_THREADS>(
+            inclusive_output, 1, LOGICAL_WARP_THREADS - 1, member_mask
+        );
+        if(lane_id == LOGICAL_WARP_THREADS - 1)
+            exclusive_output = initial_value;
+    }
+
+    /**
+     * \brief Computes both inclusive and exclusive reverse scans using the specified binary scan functor across the calling warp.  Because no initial value is supplied, the \p exclusive_output computed for the last <em>warp-lane</em> is undefined.
+     */
+    template <typename ScanOpT>
+    __device__ __forceinline__ void ReverseScan(
+        T               input,              ///< [in] Calling thread's input item.
+        T               &inclusive_output,  ///< [out] Calling thread's inclusive-scan output item.
+        T               &exclusive_output,  ///< [out] Calling thread's exclusive-scan output item.
+        T              initial_value,      ///< [in] The inital value to seed the scan op
+        ScanOpT         scan_op)            ///< [in] Binary scan operator
+    {
+        InclusiveReverseScan(input, inclusive_output, scan_op);
+        // exclusive_output = inclusive_output - input;
+
+        // initial value unknown
+        exclusive_output = cub::ShuffleDown<LOGICAL_WARP_THREADS>(
+            inclusive_output, 1, LOGICAL_WARP_THREADS - 1, member_mask
+        );
+        if(lane_id == LOGICAL_WARP_THREADS - 1)
+            exclusive_output = initial_value;
+    }
 };
 
 /**
