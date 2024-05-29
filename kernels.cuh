@@ -12,9 +12,9 @@
 // #define COLS 32
 // #define ITEMS 4
 
-#define ROWS 256
-#define COLS 256
-#define DIM 756 * 16
+#define ROWS 64
+#define COLS 64
+#define DIM 96 * 2 * 256
 #define ITEMS 4
 
 constexpr dim3 BLOCK_SIZE {8, 16, 1};

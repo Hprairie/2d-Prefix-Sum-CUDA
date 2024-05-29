@@ -37,6 +37,7 @@ __global__ void block_scan(int *input, int *result) {
     __syncthreads();
 }
 
+
 __global__ void reverse_block_scan(int *input, int* result){
     typedef cub::BlockLoad<int, BLOCK_SIZE.x, ITEMS, cub::BLOCK_LOAD_DIRECT> BlockLoad;
     typedef cub::BlockStore<int, BLOCK_SIZE.x, ITEMS, cub::BLOCK_STORE_DIRECT> BlockStore;
